@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rushdb-hermes-memory"
+version = "0.1.0"
+description = "Native RushDB persistent memory provider for Hermes Agent"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "RushDB Team", email = "hi@rushdb.com" }]
+dependencies = ["rushdb>=2.10.0,<3"]
+keywords = [
+  "rushdb",
+  "hermes-agent",
+  "agent-memory",
+  "persistent-memory",
+  "semantic-search",
+  "knowledge-graph",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13"
+]
+
+[project.urls]
+Homepage = "https://docs.rushdb.com/connect/hermes-memory"
+Repository = "https://github.com/rush-db/rushdb-hermes-memory"
+Issues = "https://github.com/rush-db/rushdb-hermes-memory/issues"
+Documentation = "https://docs.rushdb.com"
+
+[project.entry-points."hermes_agent.memory_providers"]
+rushdb = "rushdb_hermes_memory:register"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.12,<1"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rushdb_hermes_memory"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
