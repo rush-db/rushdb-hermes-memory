@@ -37,6 +37,7 @@ from .contract import (
     hash_scope,
     utc_now,
 )
+from .embedder import OpenAICompatibleEmbedder, embedder_from_env
 from .outbox import DurableOutbox
 
 logger = logging.getLogger(__name__)
@@ -66,25 +67,49 @@ class RushDBMemoryProvider(MemoryProvider):
         self._prefetch_cache: dict[tuple[str, str], str] = {}
         self._last_recall_count = 0
         self._remote_slots = threading.BoundedSemaphore(value=2)
+        self._embedder: OpenAICompatibleEmbedder | None = None
 
     @property
     def name(self) -> str:
         return "rushdb"
 
     def is_available(self) -> bool:
-        return RushDB is not None and bool(os.environ.get("RUSHDB_API_KEY"))
+        return self.unavailable_reason() == ""
 
     def unavailable_reason(self) -> str:
-        if RushDB is None:
-            return "Install the RushDB SDK with: pip install rushdb>=2.10.0"
+        """Why the provider cannot run, or "" when it can.
+
+        It connects to RushDB Cloud with ``RUSHDB_API_KEY``, or to a standalone
+        engine with ``RUSHDB_ENGINE_URL`` and ``RUSHDB_ENGINE_TOKEN``. A
+        standalone engine has no managed embeddings, so it also needs an
+        embedding provider (``RUSHDB_EMBEDDING_*``).
+        """
+        if RushDB is None and self._db_factory is None:
+            return "Install the RushDB SDK with: pip install rushdb"
+        embedder, embedding_error = embedder_from_env()
+        if embedding_error:
+            return embedding_error
+        if os.environ.get("RUSHDB_ENGINE_URL"):
+            if not os.environ.get("RUSHDB_ENGINE_TOKEN"):
+                return "Set RUSHDB_ENGINE_TOKEN for the standalone engine at RUSHDB_ENGINE_URL"
+            if embedder is None:
+                return (
+                    "A standalone RushDB engine has no managed embeddings: set "
+                    "RUSHDB_EMBEDDING_API_KEY, RUSHDB_EMBEDDING_MODEL and "
+                    "RUSHDB_EMBEDDING_DIMENSIONS"
+                )
+            return ""
         if not os.environ.get("RUSHDB_API_KEY"):
-            return "Set RUSHDB_API_KEY for the active Hermes profile"
+            return (
+                "Set RUSHDB_API_KEY (RushDB Cloud) or RUSHDB_ENGINE_URL and RUSHDB_ENGINE_TOKEN "
+                "(a standalone engine) for the active Hermes profile"
+            )
         return ""
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
-        api_key = os.environ.get("RUSHDB_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("RUSHDB_API_KEY is not configured")
+        reason = self.unavailable_reason()
+        if reason:
+            raise RuntimeError(reason)
 
         hermes_home = Path(str(kwargs.get("hermes_home") or "")).expanduser()
         if not str(hermes_home) or str(hermes_home) == ".":
@@ -108,8 +133,22 @@ class RushDBMemoryProvider(MemoryProvider):
         factory = self._db_factory or RushDB
         if factory is None:
             raise RuntimeError("The rushdb package is not installed")
-        url = os.environ.get("RUSHDB_API_URL")
-        self._db = factory(api_key=api_key, url=url) if url else factory(api_key)
+        self._embedder, _ = embedder_from_env()
+        engine_url = os.environ.get("RUSHDB_ENGINE_URL")
+        if engine_url:
+            scope = os.environ.get("RUSHDB_ENGINE_SCOPE") or None
+            self._db = factory(
+                api_key=os.environ["RUSHDB_ENGINE_TOKEN"],
+                direct=True,
+                engine_url=engine_url,
+                scope=scope,
+            )
+        else:
+            api_key = os.environ["RUSHDB_API_KEY"]
+            url = os.environ.get("RUSHDB_API_URL")
+            self._db = factory(api_key=api_key, url=url) if url else factory(api_key)
+        if self._embedder is not None:
+            self._ensure_external_indexes()
 
         if self._worker is None or not self._worker.is_alive():
             self._stop.clear()
@@ -125,9 +164,9 @@ class RushDBMemoryProvider(MemoryProvider):
         return [
             {
                 "key": "api_key",
-                "description": "RushDB project API key",
+                "description": "RushDB Cloud project API key (or use a standalone engine below)",
                 "secret": True,
-                "required": True,
+                "required": False,
                 "env_var": "RUSHDB_API_KEY",
                 "url": "https://app.rushdb.com",
             },
@@ -137,6 +176,57 @@ class RushDBMemoryProvider(MemoryProvider):
                 "secret": True,
                 "required": False,
                 "env_var": "RUSHDB_API_URL",
+            },
+            {
+                "key": "engine_url",
+                "description": "A standalone RushDB engine's URL, instead of RushDB Cloud",
+                "secret": False,
+                "required": False,
+                "env_var": "RUSHDB_ENGINE_URL",
+            },
+            {
+                "key": "engine_token",
+                "description": "The standalone engine's token",
+                "secret": True,
+                "required": False,
+                "env_var": "RUSHDB_ENGINE_TOKEN",
+            },
+            {
+                "key": "engine_scope",
+                "description": "Tenant on a standalone engine started with --multitenant",
+                "secret": False,
+                "required": False,
+                "env_var": "RUSHDB_ENGINE_SCOPE",
+            },
+            {
+                "key": "embedding_api_key",
+                "description": (
+                    "OpenAI-compatible embedding API key (required with a standalone engine)"
+                ),
+                "secret": True,
+                "required": False,
+                "env_var": "RUSHDB_EMBEDDING_API_KEY",
+            },
+            {
+                "key": "embedding_model",
+                "description": "Embedding model, e.g. text-embedding-3-small",
+                "secret": False,
+                "required": False,
+                "env_var": "RUSHDB_EMBEDDING_MODEL",
+            },
+            {
+                "key": "embedding_dimensions",
+                "description": "Embedding vector length, e.g. 1536",
+                "secret": False,
+                "required": False,
+                "env_var": "RUSHDB_EMBEDDING_DIMENSIONS",
+            },
+            {
+                "key": "embedding_base_url",
+                "description": "OpenAI-compatible embeddings API base (default https://api.openai.com/v1)",
+                "secret": False,
+                "required": False,
+                "env_var": "RUSHDB_EMBEDDING_BASE_URL",
             },
         ]
 
@@ -348,9 +438,39 @@ class RushDBMemoryProvider(MemoryProvider):
             where["active"] = True
         return where
 
+    def _ensure_external_indexes(self) -> None:
+        """With client-side embeddings, recall searches external indexes of the
+        embedder's dimensions; create the ones that are missing."""
+        embedder = self._embedder
+        if embedder is None or self._db is None:
+            return
+        found = self._db.ai.indexes.find()
+        existing = getattr(found, "data", found) or []
+        for label, property_name in (("EPISODE", "summary"), ("MEMORY_FACT", "text")):
+            if any(
+                index.get("label") == label
+                and index.get("propertyName") == property_name
+                and index.get("sourceType") == "external"
+                and int(index.get("dimensions") or 0) == embedder.dimensions
+                for index in existing
+            ):
+                continue
+            self._db.ai.indexes.create(
+                {
+                    "label": label,
+                    "propertyName": property_name,
+                    "external": True,
+                    "dimensions": embedder.dimensions,
+                    "similarityFunction": embedder.similarity,
+                }
+            )
+
     def _remote_recall(self, query: str, limit: int) -> list[dict[str, Any]]:
         if self._db is None:
             return []
+        query_vector = (
+            self._embedder.embed([bounded_text(query, 4000)])[0] if self._embedder else None
+        )
         calls = [
             ("EPISODE", "summary", self._scope_where()),
             ("MEMORY_FACT", "text", self._scope_where(active_only=True)),
@@ -358,15 +478,17 @@ class RushDBMemoryProvider(MemoryProvider):
         memories: list[dict[str, Any]] = []
         for label, property_name, where in calls:
             try:
-                result = self._db.records.vector_search(
-                    {
-                        "propertyName": property_name,
-                        "query": query,
-                        "labels": [label],
-                        "where": where,
-                        "limit": limit,
-                    }
-                )
+                search: dict[str, Any] = {
+                    "propertyName": property_name,
+                    "labels": [label],
+                    "where": where,
+                    "limit": limit,
+                }
+                if query_vector is not None:
+                    search["queryVector"] = query_vector
+                else:
+                    search["query"] = query
+                result = self._db.records.vector_search(search)
                 for record in getattr(result, "data", result) or []:
                     text = str(record.get(property_name, "")).strip()
                     if text:
@@ -536,12 +658,26 @@ class RushDBMemoryProvider(MemoryProvider):
         event = self._outbox.read(path)
         label = "EPISODE" if event.get("eventType") == "episode" else "MEMORY_FACT"
         merge_key = "eventId" if label == "EPISODE" else "factId"
+        text_property = "summary" if label == "EPISODE" else "text"
         for attempt in range(4):
             try:
+                vectors = None
+                if self._embedder is not None:
+                    vector = self._embedder.embed(
+                        [bounded_text(str(event.get(text_property, "")), 4000)]
+                    )[0]
+                    vectors = [
+                        {
+                            "propertyName": text_property,
+                            "vector": vector,
+                            "similarityFunction": self._embedder.similarity,
+                        }
+                    ]
                 self._db.records.upsert(
                     data=event,
                     label=label,
                     options={"mergeBy": [merge_key], "mergeStrategy": "append"},
+                    vectors=vectors,
                 )
                 self._outbox.acknowledge(path)
                 return
