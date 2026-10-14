@@ -28,7 +28,7 @@ export RUSHDB_API_KEY="your-project-api-key"
 
 Optional environment variables:
 
-- `RUSHDB_API_URL` selects a self-hosted RushDB API.
+- `RUSHDB_API_URL` selects a different RushDB Cloud API endpoint. To self-host, run the RushDB engine and use the settings below.
 - `RUSHDB_MEMORY_SCOPE_SALT` makes participant hashes deployment-specific.
 
 ### A standalone RushDB engine
