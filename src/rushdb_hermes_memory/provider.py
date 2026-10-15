@@ -172,7 +172,10 @@ class RushDBMemoryProvider(MemoryProvider):
             },
             {
                 "key": "api_url",
-                "description": "Optional RushDB Cloud API URL (a self-hosted engine uses the engine URL instead)",
+                "description": (
+                    "Optional RushDB Cloud API URL "
+                    "(a self-hosted engine uses the engine URL instead)"
+                ),
                 "secret": True,
                 "required": False,
                 "env_var": "RUSHDB_API_URL",
