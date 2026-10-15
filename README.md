@@ -8,7 +8,8 @@ The provider recalls scope-authorized historical context before inference, captu
 
 - Python 3.11–3.13
 - Hermes Agent with memory-provider entry-point support
-- A RushDB project API key from [app.rushdb.com](https://app.rushdb.com)
+- A RushDB project API key from [app.rushdb.com](https://app.rushdb.com), or a standalone RushDB
+  engine and an embedding provider (see below)
 
 ## Install
 
@@ -27,8 +28,27 @@ export RUSHDB_API_KEY="your-project-api-key"
 
 Optional environment variables:
 
-- `RUSHDB_API_URL` selects a self-hosted RushDB API.
+- `RUSHDB_API_URL` selects a different RushDB Cloud API endpoint. To self-host, run the RushDB engine and use the settings below.
 - `RUSHDB_MEMORY_SCOPE_SALT` makes participant hashes deployment-specific.
+
+### A standalone RushDB engine
+
+Recall is a vector search. RushDB Cloud embeds memories for you; a standalone engine (`rushdb`) does
+not, so the provider embeds them itself through an OpenAI-compatible embeddings endpoint:
+
+```bash
+export RUSHDB_ENGINE_URL="http://127.0.0.1:3000"
+export RUSHDB_ENGINE_TOKEN="your-engine-token"
+# export RUSHDB_ENGINE_SCOPE="tenant-1"   # only for an engine started with --multitenant
+export RUSHDB_EMBEDDING_API_KEY="sk-..."
+export RUSHDB_EMBEDDING_MODEL="text-embedding-3-small"
+export RUSHDB_EMBEDDING_DIMENSIONS="1536"
+# export RUSHDB_EMBEDDING_BASE_URL="https://api.openai.com/v1"
+```
+
+On start the provider creates the external vector indexes it needs; every memory is written with its
+vector and recall searches with the embedded query. With RushDB Cloud the embedding settings are
+optional. When the configuration is incomplete, `hermes memory status` reports what is missing.
 
 Hermes discovers the `rushdb` provider through the `hermes_agent.memory_providers` Python entry-point group.
 
