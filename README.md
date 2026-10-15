@@ -33,7 +33,7 @@ Optional environment variables:
 
 ### A standalone RushDB engine
 
-Recall is a vector search. RushDB Cloud embeds memories for you; a standalone engine (`rushdbd`) does
+Recall is a vector search. RushDB Cloud embeds memories for you; a standalone engine (`rushdb`) does
 not, so the provider embeds them itself through an OpenAI-compatible embeddings endpoint:
 
 ```bash
