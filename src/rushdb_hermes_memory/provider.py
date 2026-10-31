@@ -35,6 +35,8 @@ from .contract import (
     episode_event_id,
     fact_event_id,
     hash_scope,
+    sha256,
+    stable_json,
     utc_now,
 )
 from .embedder import OpenAICompatibleEmbedder, embedder_from_env
@@ -43,6 +45,8 @@ from .outbox import DurableOutbox
 logger = logging.getLogger(__name__)
 
 _SENTINEL = object()
+# Outbox-only key on a replacing fact: the full entry Hermes replaced.
+_SUPERSEDES_TEXT = "_supersedesText"
 
 
 class RushDBMemoryProvider(MemoryProvider):
@@ -366,7 +370,14 @@ class RushDBMemoryProvider(MemoryProvider):
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        if self._agent_context != "primary" or action not in {"add", "replace"}:
+        if self._agent_context != "primary" or action not in {"add", "replace", "remove"}:
+            return
+        # Hermes passes the full entry a replace or remove acted on; `old_text` alone
+        # is a search argument, not an identity, so it is never used to match a fact.
+        previous = bounded_text(str((metadata or {}).get("previous_content") or ""))
+        if action == "remove":
+            if previous:
+                self._schedule(self._retraction_event(target, previous))
             return
         text = bounded_text(content)
         if not text:
@@ -397,7 +408,26 @@ class RushDBMemoryProvider(MemoryProvider):
             "provenance": f"hermes:memory_write:{action}",
         }
         event["factId"] = fact_event_id(event)
+        if action == "replace" and previous and previous != text:
+            # Resolved to a factId when the event is persisted; never stored on the record.
+            event[_SUPERSEDES_TEXT] = previous
         self._schedule(event)
+
+    def _retraction_event(self, target: str, text: str) -> dict[str, Any]:
+        event: dict[str, Any] = {
+            "schemaVersion": SCHEMA_VERSION,
+            "eventType": "fact-retraction",
+            "agentId": self._agent_id,
+            "profileId": self._profile_id,
+            "privacyScope": "private",
+            "participantScopeHash": self._participant_scope_hash,
+            "sandboxEligible": False,
+            "subjectKey": target,
+            "text": text,
+            "retractedAt": utc_now(),
+        }
+        event["eventId"] = sha256(stable_json(event))
+        return event
 
     def on_session_switch(
         self,
@@ -659,9 +689,21 @@ class RushDBMemoryProvider(MemoryProvider):
         if self._outbox is None or self._db is None:
             raise RuntimeError("RushDB memory provider is not initialized")
         event = self._outbox.read(path)
+        if event.get("eventType") == "fact-retraction":
+            self._with_retry(lambda: self._deactivate_facts(event, until=event["retractedAt"]))
+            self._outbox.acknowledge(path)
+            return
+        supersedes_text = event.pop(_SUPERSEDES_TEXT, None)
         label = "EPISODE" if event.get("eventType") == "episode" else "MEMORY_FACT"
         merge_key = "eventId" if label == "EPISODE" else "factId"
         text_property = "summary" if label == "EPISODE" else "text"
+        replaced: list[Any] = []
+        if supersedes_text:
+            replaced = self._with_retry(
+                lambda: self._active_facts(event, supersedes_text, exclude=event["factId"])
+            )
+            if replaced:
+                event["supersedesFactId"] = str(replaced[0].get("factId"))
         for attempt in range(4):
             try:
                 vectors = None
@@ -682,12 +724,53 @@ class RushDBMemoryProvider(MemoryProvider):
                     options={"mergeBy": [merge_key], "mergeStrategy": "append"},
                     vectors=vectors,
                 )
-                self._outbox.acknowledge(path)
-                return
+                break
             except Exception:
                 if attempt == 3:
                     raise
                 time.sleep(0.25 * (2**attempt))
+        # Deactivate only after the replacement is stored, so recall always finds one of them.
+        # A replay finds the old fact already inactive and leaves supersedesFactId as written.
+        for record in replaced:
+            self._with_retry(lambda r=record: self._deactivate(r, until=str(event["validFrom"])))
+        self._outbox.acknowledge(path)
+
+    @staticmethod
+    def _with_retry(call: Callable[[], Any]) -> Any:
+        for attempt in range(4):
+            try:
+                return call()
+            except Exception:
+                if attempt == 3:
+                    raise
+                time.sleep(0.25 * (2**attempt))
+        return None
+
+    def _active_facts(self, event: dict[str, Any], text: str, *, exclude: str = "") -> list[Any]:
+        """Active facts in the event's own scope whose text is exactly `text`."""
+        assert self._db is not None
+        where = {
+            "agentId": event["agentId"],
+            "profileId": event["profileId"],
+            "privacyScope": event["privacyScope"],
+            "participantScopeHash": event["participantScopeHash"],
+            "sandboxEligible": event["sandboxEligible"],
+            "subjectKey": event["subjectKey"],
+            "text": text,
+            "active": True,
+        }
+        found = self._db.records.find({"labels": ["MEMORY_FACT"], "where": where, "limit": 20})
+        records = getattr(found, "data", found) or []
+        return [record for record in records if str(record.get("factId")) != exclude]
+
+    def _deactivate(self, record: Any, *, until: str) -> None:
+        assert self._db is not None
+        target = getattr(record, "id", None) or record.get("__id")
+        self._db.records.update(target, {"active": False, "validUntil": until}, label="MEMORY_FACT")
+
+    def _deactivate_facts(self, event: dict[str, Any], *, until: str) -> None:
+        for record in self._active_facts(event, str(event["text"])):
+            self._deactivate(record, until=until)
 
     def _flush(self, timeout_seconds: float) -> None:
         deadline = time.monotonic() + timeout_seconds

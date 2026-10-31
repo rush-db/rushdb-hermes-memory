@@ -58,6 +58,7 @@ Hermes discovers the `rushdb` provider through the `hermes_agent.memory_provider
 - Recall has a short fail-open timeout and falls back to bounded recent in-process episodes.
 - Successful primary-agent turns are captured asynchronously as canonical `EPISODE` records.
 - Explicit Hermes memory `add` and `replace` operations are mirrored as active `MEMORY_FACT` records.
+- A `replace` (or a `patch`, which Hermes mirrors as a replace) deactivates the fact holding the entry it replaced and records its id in `supersedesFactId`; a `remove` deactivates the removed entry's fact. Both set `validUntil` and keep the old fact for history. The entry is matched by the exact `previous_content` Hermes reports, within the same scope and target; Hermes versions that don't report it keep the earlier fact active.
 - Writes first enter an atomic local outbox under `$HERMES_HOME/rushdb-memory/outbox`, then use deterministic IDs and idempotent RushDB upserts.
 - Surviving outbox files are retried while the process is running and replayed after restart.
 
