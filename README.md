@@ -8,8 +8,15 @@ The provider recalls scope-authorized historical context before inference, captu
 
 - Python 3.11–3.13
 - Hermes Agent with memory-provider entry-point support
-- A RushDB project API key from [app.rushdb.com](https://app.rushdb.com), or a standalone RushDB
-  engine and an embedding provider (see below)
+- A RushDB project API key from [app.rushdb.com](https://app.rushdb.com), or self-hosted RushDB
+  and an embedding provider (see below)
+
+## Compatibility
+
+| Package | RushDB 3.x and RushDB Cloud | RushDB 2.x (legacy) |
+|---|---|---|
+| `rushdb-hermes-memory` | 0.2.x (needs `rushdb` 3.x) | 0.1.0 (`rushdb` 2.10.0): `pip install "rushdb-hermes-memory<0.2"` |
+| `rushdb` (PyPI) | 3.x | 2.10.0: `pip install "rushdb<3"` |
 
 ## Install
 
@@ -31,9 +38,9 @@ Optional environment variables:
 - `RUSHDB_API_URL` selects a different RushDB Cloud API endpoint. To self-host, run the RushDB engine and use the settings below.
 - `RUSHDB_MEMORY_SCOPE_SALT` makes participant hashes deployment-specific.
 
-### A standalone RushDB engine
+### Self-hosted RushDB
 
-Recall is a vector search. RushDB Cloud embeds memories for you; a standalone engine (`rushdb`) does
+Recall is a vector search. RushDB Cloud embeds memories for you; a self-hosted engine (`rushdb`) does
 not, so the provider embeds them itself through an OpenAI-compatible embeddings endpoint:
 
 ```bash
