@@ -32,7 +32,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://docs.rushdb.com/connect/hermes-memory"
+Homepage = "https://docs.rushdb.com/3.x/connect/hermes-memory/"
 Repository = "https://github.com/rush-db/rushdb-hermes-memory"
 Issues = "https://github.com/rush-db/rushdb-hermes-memory/issues"
 Documentation = "https://docs.rushdb.com"
